@@ -1,10 +1,8 @@
 import sqlite3
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 import os
 import re
-from telegram import BotCommand, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -36,19 +34,11 @@ def init_db():
 
 
 def parse_params(text: str):
-    """
-    Parse key=value pairs, allowing commas and spaces inside values.
-    Example: "who=Alice category=Work tags=urgent,homework"
-    """
     pattern = r'(who|category|tags)\s*=\s*(.*?)(?=\s+\w+\s*=|$)'
     return {k.lower(): v.strip() for k, v in re.findall(pattern, text)}
 
 
 def parse_add_command(text: str):
-    """
-    Splits free-text task description from key=value parameters.
-    Everything before the first key=value is the task.
-    """
     pattern = r'\b(who|category|tags)\s*='
     match = re.search(pattern, text)
     if match:
@@ -63,6 +53,7 @@ def parse_add_command(text: str):
 
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    assert update.message is not None
     user_id = update.message.from_user.id
     text = " ".join(context.args)
 
@@ -94,6 +85,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    assert update.message is not None
     user_id = update.message.from_user.id
     filters = parse_params(" ".join(context.args))
 
@@ -112,7 +104,6 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "tags" in filters:
         query += " AND tags LIKE ?"
         params.append(f"%{filters['tags']}%")
-    # By default exclude completed unless show_completed=1
     if filters.get("show_completed") != "1":
         query += " AND completed_at IS NULL"
 
@@ -140,6 +131,7 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    assert update.message is not None
     user_id = update.message.from_user.id
     if not context.args:
         await update.message.reply_text("Specify the task ID to complete: /done <id>")
@@ -166,6 +158,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def update_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    assert update.message is not None
     user_id = update.message.from_user.id
     if not context.args:
         await update.message.reply_text(
@@ -197,7 +190,6 @@ async def update_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No valid fields to update.")
         return
 
-    # Add updated_at
     fields.append("updated_at=?")
     values.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -216,8 +208,8 @@ async def update_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
 
-# /delete command
 async def delete_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    assert update.message is not None
     user_id = update.message.from_user.id
     if not context.args:
         await update.message.reply_text("Specify the task ID to delete: /delete <id>")
@@ -229,7 +221,6 @@ async def delete_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Invalid task ID")
         return
 
-    # Ask for confirmation
     keyboard = [
         [
             InlineKeyboardButton("✅ Yes", callback_data=f"delete_yes:{task_id}:{user_id}"),
@@ -244,16 +235,17 @@ async def delete_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# Handle callback queries
+
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    assert query is not None
     await query.answer()
 
+    assert query is not None
     data = query.data.split(":")
     action, task_id, user_id = data[0], int(data[1]), int(data[2])
     requesting_user = query.from_user.id
 
-    # Security: only allow same user
     if requesting_user != user_id:
         await query.edit_message_text("❌ You are not allowed to confirm this deletion.")
         return
@@ -270,30 +262,30 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(f"❎ Deletion of task <b>{task_id}</b> canceled.", parse_mode="HTML")
 
 
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    assert update.message is not None
     help_text = """
 Todo Bot Commands:
 
-/add - <task description> [who=..., category=..., tags=...] - Add a new task. Free-text first, optional key=value after.
-/list - [task=..., who=..., category=..., tags=..., show_completed=1] - List tasks with optional filters. By default completed tasks are hidden.
+/add - <task description> [who=..., category=..., tags=...] - Add a new task.
+/list - [task=..., who=..., category=..., tags=..., show_completed=1] - List tasks.
 /done - <task_id> - Mark a task as completed.
-/delete -  <task_id> - Delete a task (with confirmation).
-/update -  <task_id> <new task description> [who=..., category=..., tags=...] - Update task fields.
-/help - Show  help message.
-/start - Show help message.
+/delete - <task_id> - Delete a task (with confirmation).
+/update - <task_id> <new task description> [who=..., category=..., tags=...] - Update task.
+/help - Show this help.
+/start - Show this help.
 """
     await update.message.reply_text(help_text)
 
 
 commands = [
-    BotCommand("add", "Add a new task: /add <desc> [who=..., category=..., tags=...]"),
-    BotCommand("list", "List your tasks with optional filters"),
+    BotCommand("add", "Add a new task"),
+    BotCommand("list", "List your tasks"),
     BotCommand("done", "Mark a task as completed"),
-    BotCommand("delete", "Delete a task: /delete <id>"),
-    BotCommand("update", "Update task fields: /update <id> <desc> [who=..., category=..., tags=...]"),
-    BotCommand("start", "Show help message"),
-    BotCommand("help", "Show help message"),
+    BotCommand("delete", "Delete a task"),
+    BotCommand("update", "Update task fields"),
+    BotCommand("start", "Show help"),
+    BotCommand("help", "Show help"),
 ]
 
 
@@ -316,7 +308,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("update", update_task))
     app.add_handler(CommandHandler("delete", delete_task))
     app.add_handler(CallbackQueryHandler(handle_delete_callback, pattern=r"^delete_"))
-
     app.add_handler(CommandHandler("start", help_command))
     app.add_handler(CommandHandler("help", help_command))
 
