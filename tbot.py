@@ -1,4 +1,6 @@
 import sqlite3
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackQueryHandler
 import os
 import re
 from telegram import BotCommand, Update
@@ -214,24 +216,72 @@ async def update_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
 
+# /delete command
+async def delete_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if not context.args:
+        await update.message.reply_text("Specify the task ID to delete: /delete <id>")
+        return
+
+    try:
+        task_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid task ID")
+        return
+
+    # Ask for confirmation
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Yes", callback_data=f"delete_yes:{task_id}:{user_id}"),
+            InlineKeyboardButton("❌ No", callback_data=f"delete_no:{task_id}:{user_id}")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        f"Are you sure you want to delete task <b>{task_id}</b>?",
+        parse_mode="HTML",
+        reply_markup=reply_markup
+    )
+
+# Handle callback queries
+async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split(":")
+    action, task_id, user_id = data[0], int(data[1]), int(data[2])
+    requesting_user = query.from_user.id
+
+    # Security: only allow same user
+    if requesting_user != user_id:
+        await query.edit_message_text("❌ You are not allowed to confirm this deletion.")
+        return
+
+    if action == "delete_yes":
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("DELETE FROM tasks WHERE id=? AND user_id=?", (task_id, user_id))
+        conn.commit()
+        conn.close()
+        await query.edit_message_text(f"🗑️ Task <b>{task_id}</b> deleted.", parse_mode="HTML")
+
+    elif action == "delete_no":
+        await query.edit_message_text(f"❎ Deletion of task <b>{task_id}</b> canceled.", parse_mode="HTML")
+
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
 Todo Bot Commands:
 
-/add <task description> [who=..., category=..., tags=...]
-    - Add a new task. Free-text first, optional key=value after.
-
-/list [task=..., who=..., category=..., tags=..., show_completed=1]
-    - List tasks with optional filters. By default completed tasks are hidden.
-
-/done <task_id>
-    - Mark a task as completed.
-
-/update <task_id> <new task description> [who=..., category=..., tags=...]
-    - Update task fields.
-
-/help
-    - Show this help message.
+/add - <task description> [who=..., category=..., tags=...] - Add a new task. Free-text first, optional key=value after.
+/list - [task=..., who=..., category=..., tags=..., show_completed=1] - List tasks with optional filters. By default completed tasks are hidden.
+/done - <task_id> - Mark a task as completed.
+/delete -  <task_id> - Delete a task (with confirmation).
+/update -  <task_id> <new task description> [who=..., category=..., tags=...] - Update task fields.
+/help - Show  help message.
+/start - Show help message.
 """
     await update.message.reply_text(help_text)
 
@@ -240,7 +290,9 @@ commands = [
     BotCommand("add", "Add a new task: /add <desc> [who=..., category=..., tags=...]"),
     BotCommand("list", "List your tasks with optional filters"),
     BotCommand("done", "Mark a task as completed"),
+    BotCommand("delete", "Delete a task: /delete <id>"),
     BotCommand("update", "Update task fields: /update <id> <desc> [who=..., category=..., tags=...]"),
+    BotCommand("start", "Show help message"),
     BotCommand("help", "Show help message"),
 ]
 
@@ -262,6 +314,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("list", list_tasks))
     app.add_handler(CommandHandler("done", done))
     app.add_handler(CommandHandler("update", update_task))
+    app.add_handler(CommandHandler("delete", delete_task))
+    app.add_handler(CallbackQueryHandler(handle_delete_callback, pattern=r"^delete_"))
+
+    app.add_handler(CommandHandler("start", help_command))
     app.add_handler(CommandHandler("help", help_command))
 
     app.run_polling()
